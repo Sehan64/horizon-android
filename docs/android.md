@@ -160,7 +160,7 @@ launcher entry; TV support is experimental and analog gamepad axes are not conne
 
 F2 keeps the original PNG in the profile and publishes a copy to
 **Pictures/HorizonAndroid** through Android MediaStore. Android 10+ needs no
-storage permission. Android 8.1–9 asks for storage permission when first saving;
+storage permission. Android 8.1ï¿½9 asks for storage permission when first saving;
 if access is denied, the profile copy remains available. Gallery publication runs
 outside the render thread and reports success or failure in game chat.
 
@@ -171,6 +171,12 @@ The launcher exposes actual engine paths: **Vulkan / GPU batching**,
 uses direct terrain draws for drivers with rendering issues. GLES needs ES 3.0+
 and the texture/shader limits required by the engine; 32-bit builds default to it.
 These modes use the system driver, without bundled ANGLE or Turnip replacements.
+
+Builds made with `--panvk-driver PATH` also offer **Vulkan / PanVK (Mesa)**, which
+packages the given Mesa PanVK ICD as `libvulkan_panfrost.so` and loads it in-process
+for game launches instead of the system Vulkan driver. The launcher keeps the system
+driver so a broken PanVK build can still be switched back. The option is arm64-v8a
+only and does not modify `/vendor`.
 
 Resolution, chunks, frame limits, graphics quality and worker budgets remain game
 settings. The launcher does not overwrite them. Its own renderer uses Auto
@@ -191,6 +197,7 @@ tables privately, then build the required ABI:
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 python tools/android_prepare.py
 python tools/android_build.py --abi arm64-v8a --public
+python tools/android_build.py --abi arm64-v8a --public --panvk-driver /path/to/libvulkan_panfrost.so
 python tools/android_build.py --abi armeabi-v7a --public
 python tools/android_build.py --abi x86 --public
 python tools/android_build.py --abi x86_64 --public

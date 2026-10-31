@@ -190,6 +190,45 @@ impl super::InstanceShared {
     }
 }
 
+/// Loads the Vulkan entry points, optionally from the Mesa-style ICD named by
+/// `HORIZON_VULKAN_DRIVER`. Android apps cannot install an ICD into
+/// `/vendor`, so Horizon ships PanVK in the APK and loads its exported
+/// `vk_icdGetInstanceProcAddr` directly. Falls back to the system loader when
+/// the environment variable is unset or the driver cannot be opened.
+#[cfg(target_os = "android")]
+unsafe fn load_vulkan_entry() -> Result<ash::Entry, ash::LoadingError> {
+    let Some(path) = std::env::var_os("HORIZON_VULKAN_DRIVER").filter(|path| !path.is_empty())
+    else {
+        return unsafe { ash::Entry::load() };
+    };
+    let custom = (|| -> Result<ash::Entry, ash::LoadingError> {
+        let library = unsafe { libloading::Library::new(&path) }
+            .map_err(ash::LoadingError::LibraryLoadFailure)?;
+        let get_instance_proc_addr = unsafe {
+            *library
+                .get::<vk::PFN_vkGetInstanceProcAddr>(b"vk_icdGetInstanceProcAddr\0")
+                .map_err(ash::LoadingError::LibraryLoadFailure)?
+        };
+        // The entry points stay valid for the lifetime of the process.
+        std::mem::forget(library);
+        Ok(unsafe {
+            ash::Entry::from_static_fn(ash::StaticFn {
+                get_instance_proc_addr,
+            })
+        })
+    })();
+    match custom {
+        Ok(entry) => Ok(entry),
+        Err(error) => {
+            log::warn!(
+                "HORIZON_VULKAN_DRIVER={} could not be loaded ({error}); using the system Vulkan loader",
+                path.to_string_lossy()
+            );
+            unsafe { ash::Entry::load() }
+        }
+    }
+}
+
 impl super::Instance {
     pub fn shared_instance(&self) -> &super::InstanceShared {
         &self.shared
@@ -577,9 +616,11 @@ impl super::Instance {
             profiling::scope!("Load vk library");
             // ohos support is already fixed on ash main, but it's unclear when
             // a new release can happen.
-            #[cfg(target_env = "ohos")]
+            #[cfg(target_os = "android")]
+            let loaded = load_vulkan_entry();
+            #[cfg(all(not(target_os = "android"), target_env = "ohos"))]
             let loaded = ash::Entry::load_from("libvulkan.so");
-            #[cfg(not(target_env = "ohos"))]
+            #[cfg(all(not(target_os = "android"), not(target_env = "ohos")))]
             let loaded = ash::Entry::load();
             loaded
         }

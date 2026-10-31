@@ -110,6 +110,7 @@ impl Launcher {
             game.exiting(events);
             drop(game);
         }
+        crate::configure_panvk(false);
         crate::performance::stop();
         crate::platform::hide();
         horizon_client::auth::clear_current();
@@ -211,12 +212,14 @@ impl Launcher {
             )?;
             crate::platform::hide();
             self.catalog.config.save(&self.home)?;
+            crate::configure_panvk(self.catalog.config.renderer.uses_panvk());
             horizon_client::android_runtime::configure_graphics(
                 self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
             );
-            horizon_client::android_runtime::configure_gpu(
-                self.catalog.config.renderer == crate::catalog::RendererMode::Vulkan,
-            );
+            horizon_client::android_runtime::configure_gpu(matches!(
+                self.catalog.config.renderer,
+                crate::catalog::RendererMode::Vulkan | crate::catalog::RendererMode::VulkanPanVk
+            ));
             // Migrate the earlier launcher preset once; subsequent edits belong to Key Binds.
             let keypad_path = self
                 .catalog
@@ -282,6 +285,7 @@ impl Launcher {
             let game = match game::android_game() {
                 Ok(game) => game,
                 Err(error) => {
+                    crate::configure_panvk(false);
                     crate::performance::stop();
                     return Err(error);
                 }

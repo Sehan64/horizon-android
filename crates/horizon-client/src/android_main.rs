@@ -136,6 +136,51 @@ thread_local! {
     static APP: RefCell<Option<AndroidApp>> = const { RefCell::new(None) };
 }
 
+/// The PanVK ICD packaged beside the native library, when this build has one.
+static PANVK_DRIVER: std::sync::OnceLock<Option<std::path::PathBuf>> =
+    std::sync::OnceLock::new();
+
+fn native_library_dir(app: &AndroidApp) -> Option<std::path::PathBuf> {
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let dir: String = env
+        .with_local_frame(8, |env| -> jni::errors::Result<String> {
+            let activity = unsafe {
+                jni::objects::JObject::from_raw(app.activity_as_ptr().cast())
+            };
+            let info = env
+                .call_method(
+                    &activity,
+                    "getApplicationInfo",
+                    "()Landroid/content/pm/ApplicationInfo;",
+                    &[],
+                )?
+                .l()?;
+            let dir = env.get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?.l()?;
+            Ok(env.get_string((&dir).into())?.into())
+        })
+        .ok()?;
+    Some(std::path::PathBuf::from(dir))
+}
+
+/// Selects the bundled Mesa PanVK ICD for Vulkan instances created from now
+/// on. The driver is loaded in-process by the vendored wgpu-hal through
+/// `HORIZON_VULKAN_DRIVER`; Android apps cannot install an ICD into `/vendor`.
+pub(crate) fn configure_panvk(enabled: bool) {
+    match (enabled, PANVK_DRIVER.get().and_then(Option::as_ref)) {
+        (true, Some(path)) => {
+            log::info!("Using bundled PanVK driver {}", path.display());
+            // SAFETY: called on the main thread before any graphics instance.
+            unsafe { std::env::set_var("HORIZON_VULKAN_DRIVER", path) };
+        }
+        (true, None) => log::warn!("PanVK renderer selected, but this build has no bundled driver"),
+        (false, _) => {
+            // SAFETY: called on the main thread before any graphics instance.
+            unsafe { std::env::remove_var("HORIZON_VULKAN_DRIVER") };
+        }
+    }
+}
+
 pub(crate) fn android_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
     APP.with(|app| {
         EventLoop::builder()
@@ -223,6 +268,11 @@ fn android_main(app: AndroidApp) {
         return;
     };
     backend::initialize(home.clone());
+    let _ = PANVK_DRIVER.set(
+        native_library_dir(&app)
+            .map(|dir| dir.join("libvulkan_panfrost.so"))
+            .filter(|path| path.is_file()),
+    );
     if let Ok(vm) = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) } {
         secure_store::initialize(vm);
     }

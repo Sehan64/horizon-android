@@ -1,0 +1,78 @@
+name: Build PanVK APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Cargo profile to build (fast or release)'
+        required: true
+        default: 'fast'
+        type: choice
+        options:
+          - fast
+          - release
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Java 25 (for engine-data preparation)
+        uses: actions/setup-java@8df10395026330089964d4d5cec818b6250f140a # v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Set up Java 17 (for Android Gradle plugin / SDK tools)
+        uses: actions/setup-java@8df10395026330089964d4d5cec818b6250f140a # v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Android SDK platform and NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;28.2.13676358" "build-tools;35.0.0" "platforms;android-35"
+
+      - name: Install Rust aarch64 Android target
+        run: |
+          rustup target add aarch64-linux-android
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@d156388eb19633375bd040031f734123f776816b # v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Prepare vanilla engine tables (Java 25)
+        run: |
+          python3 tools/android_prepare.py --java-home "$JAVA_HOME_25_X64"
+
+      - name: Build Android APK with bundled PanVK driver
+        env:
+          HORIZON_TELEMETRY_URL: "off"
+          CARGO_BUILD_JOBS: "4"
+        run: |
+          GRADLE_BIN="$(which gradle)"
+          python3 tools/android_build.py \
+            --abi arm64-v8a \
+            --profile "${{ inputs.profile }}" \
+            --sdk "$ANDROID_HOME" \
+            --java-home "$JAVA_HOME_17_X64" \
+            --gradle "$GRADLE_BIN" \
+            --panvk-driver third_party/panvk/libvulkan_panfrost.so
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        with:
+          name: horizon-android-panvk
+          path: .local/android/apk/arm64-v8a/horizon-android.apk
+          if-no-files-found: error
