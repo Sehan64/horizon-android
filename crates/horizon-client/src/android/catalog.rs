@@ -14,8 +14,7 @@ pub fn source_only_mod(project: &Project) -> bool {
 /// Account tokens and client secrets are never bundled.
 pub const MICROSOFT_CLIENT_ID: &str = "00000000441cc96b";
 
-/// Real Vulkan rendering paths. PanVK is the one mode that also selects a
-/// different driver: the Mesa ICD bundled in the APK.
+/// Real Vulkan rendering paths; these do not select a different driver or API.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RendererMode {
@@ -23,7 +22,6 @@ pub enum RendererMode {
     OpenGl,
     #[default]
     VulkanCompatibility,
-    VulkanPanVk,
 }
 impl RendererMode {
     pub fn label(self) -> &'static str {
@@ -31,11 +29,7 @@ impl RendererMode {
             Self::Vulkan => "Vulkan / GPU batching",
             Self::OpenGl => "OpenGL ES / experimental",
             Self::VulkanCompatibility => "Vulkan / compatibility",
-            Self::VulkanPanVk => "Vulkan / PanVK (Mesa)",
         }
-    }
-    pub fn uses_panvk(self) -> bool {
-        self == Self::VulkanPanVk
     }
 }
 

@@ -103,7 +103,6 @@ def main():
     parser.add_argument('--public', action='store_true', help='Distribution APK: generated tables only; original resources download from Mojang')
     parser.add_argument('--profile', choices=['release', 'fast', 'dev'], help='Public/candidate builds default to release (ThinLTO); local builds default to optimized fast')
     parser.add_argument('--gradle', type=Path, help='Gradle 8.14 executable (otherwise discover the cached distribution)')
-    parser.add_argument('--panvk-driver', type=Path, help='Mesa PanVK ICD (libvulkan_panfrost.so) to package for the "Vulkan / PanVK" renderer; arm64-v8a only')
     parser.add_argument('--check', action='store_true', help='Only type-check the Android target')
     parser.add_argument('--clippy', action='store_true', help='Run Android Clippy with warnings denied')
     parser.add_argument('--bootstrap', type=Path, help=argparse.SUPPRESS)  # Old scripts: no longer used.
@@ -116,11 +115,6 @@ def main():
             parser.error('--public cannot reuse a native library from a different build mode')
     if args.release_candidate and args.profile == 'dev':
         parser.error('--release-candidate requires an optimized release or fast profile')
-    if args.panvk_driver is not None:
-        if args.abi != 'arm64-v8a':
-            parser.error('--panvk-driver is only supported for arm64-v8a')
-        if not args.panvk_driver.is_file():
-            parser.error(f'--panvk-driver {args.panvk_driver} is not a file')
     suffix = '.exe' if os.name == 'nt' else ''
     tools = latest(args.sdk / 'build-tools')
     ndk = latest(args.sdk / 'ndk') / 'toolchains/llvm/prebuilt' / ('windows-x86_64' if os.name == 'nt' else 'linux-x86_64')
@@ -178,9 +172,6 @@ def main():
     staging = ROOT / '.local/android/gradle-jni' / args.abi
     staging.mkdir(parents=True, exist_ok=True)
     (staging / 'libhorizon_android_native.so').unlink(missing_ok=True)
-    (staging / 'libvulkan_panfrost.so').unlink(missing_ok=True)
-    if args.panvk_driver is not None:
-        shutil.copyfile(args.panvk_driver, staging / 'libvulkan_panfrost.so')
     for name in ('libhorizon_android.so',):
         library = target_dir / target / ('debug' if args.profile == 'dev' else args.profile) / name
         if not library.is_file():

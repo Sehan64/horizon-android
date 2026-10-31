@@ -137,8 +137,7 @@ impl Launcher {
             ),
             Kind::Renderer => (
                 "Rendering mode",
-                "Uses the system GPU driver, or the bundled Mesa PanVK driver for Mali GPUs. \
-                 Applies on the next game launch.",
+                "Uses the system GPU driver. Applies on the next game launch.",
                 vec![
                     (
                         "OpenGL ES / experimental".into(),
@@ -158,14 +157,6 @@ impl Launcher {
                             .into(),
                         Action::ChooseRenderer(RendererMode::VulkanCompatibility),
                         c.renderer == RendererMode::VulkanCompatibility,
-                    ),
-                    (
-                        "Vulkan / PanVK (Mesa)".into(),
-                        "Uses the Mesa PanVK driver bundled in this build instead of the system \
-                         Vulkan driver. Experimental; built for Mali GPUs with mali_kbase."
-                            .into(),
-                        Action::ChooseRenderer(RendererMode::VulkanPanVk),
-                        c.renderer == RendererMode::VulkanPanVk,
                     ),
                 ],
             ),

@@ -1133,26 +1133,19 @@ fn drawable_size(width: u32, height: u32, max: u32) -> bool {
 /// The swapchain format: a non-sRGB target, because vanilla blends and tints in gamma
 /// space, and 8-bit, because wgpu gives `Rgba16Float` the linear `ExtendedSrgb` color
 /// space: the compositor would read these gamma-encoded values as linear light and wash
-/// every colour out. On Android, ANativeWindow natively uses RGBA8888.
+/// every colour out.
 fn surface_format(
     formats: &[wgpu::TextureFormat],
     default: wgpu::TextureFormat,
 ) -> wgpu::TextureFormat {
-    #[cfg(target_os = "android")]
-    let preferred = [
-        wgpu::TextureFormat::Rgba8Unorm,
-        wgpu::TextureFormat::Bgra8Unorm,
-    ];
-    #[cfg(not(target_os = "android"))]
-    let preferred = [
+    [
         wgpu::TextureFormat::Bgra8Unorm,
         wgpu::TextureFormat::Rgba8Unorm,
-    ];
-    preferred
-        .into_iter()
-        .find(|f| formats.contains(f))
-        .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
-        .unwrap_or(default)
+    ]
+    .into_iter()
+    .find(|f| formats.contains(f))
+    .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
+    .unwrap_or(default)
 }
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's

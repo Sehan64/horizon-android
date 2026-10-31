@@ -123,7 +123,6 @@ impl Launcher {
             game.exiting(events);
             drop(game);
         }
-        crate::configure_panvk(false);
         crate::performance::stop();
         crate::platform::hide();
         horizon_client::auth::clear_current();
@@ -235,7 +234,6 @@ impl Launcher {
             )?;
             crate::platform::hide();
             self.catalog.config.save(&self.home)?;
-            crate::configure_panvk(self.catalog.config.renderer.uses_panvk());
             horizon_client::android_runtime::configure_graphics(
                 self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
             );
@@ -307,7 +305,6 @@ impl Launcher {
             let game = match game::android_game() {
                 Ok(game) => game,
                 Err(error) => {
-                    crate::configure_panvk(false);
                     crate::performance::stop();
                     return Err(error);
                 }
