@@ -25,6 +25,8 @@ mod catalog;
 mod device_preferences;
 #[path = "android/device_runtime.rs"]
 mod device_runtime;
+#[path = "android/diagnostics.rs"]
+mod diagnostics;
 #[path = "android/display.rs"]
 mod display;
 #[path = "android/document_bridge.rs"]
@@ -137,17 +139,14 @@ thread_local! {
 }
 
 /// The PanVK ICD packaged beside the native library, when this build has one.
-static PANVK_DRIVER: std::sync::OnceLock<Option<std::path::PathBuf>> =
-    std::sync::OnceLock::new();
+static PANVK_DRIVER: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
 
 fn native_library_dir(app: &AndroidApp) -> Option<std::path::PathBuf> {
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
     let mut env = vm.attach_current_thread().ok()?;
     let dir: String = env
         .with_local_frame(8, |env| -> jni::errors::Result<String> {
-            let activity = unsafe {
-                jni::objects::JObject::from_raw(app.activity_as_ptr().cast())
-            };
+            let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
             let info = env
                 .call_method(
                     &activity,
@@ -156,7 +155,9 @@ fn native_library_dir(app: &AndroidApp) -> Option<std::path::PathBuf> {
                     &[],
                 )?
                 .l()?;
-            let dir = env.get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?.l()?;
+            let dir = env
+                .get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?
+                .l()?;
             Ok(env.get_string((&dir).into())?.into())
         })
         .ok()?;
@@ -248,7 +249,31 @@ fn init_logging() {
                 .build(),
         );
     }
-    android_logger::init_once(logger);
+    struct LocalLogger(android_logger::AndroidLogger);
+    impl log::Log for LocalLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            log::Log::enabled(&self.0, metadata)
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            log::Log::log(&self.0, record);
+            diagnostics::log_line(record.level(), record.target(), &record.args().to_string());
+        }
+        fn flush(&self) {
+            diagnostics::request_flush();
+        }
+    }
+    static LOGGER: std::sync::OnceLock<LocalLogger> = std::sync::OnceLock::new();
+    let logger = LOGGER.get_or_init(|| LocalLogger(android_logger::AndroidLogger::new(logger)));
+    if log::set_logger(logger).is_ok() {
+        log::set_max_level(if trace_gles {
+            log::LevelFilter::Trace
+        } else {
+            log::LevelFilter::Info
+        });
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -273,6 +298,9 @@ fn android_main(app: AndroidApp) {
             .map(|dir| dir.join("libvulkan_panfrost.so"))
             .filter(|path| path.is_file()),
     );
+    if let Err(error) = diagnostics::initialize(&home, serde_json::json!({})) {
+        log::error!("Cannot initialize local diagnostics: {error}");
+    }
     if let Ok(vm) = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) } {
         secure_store::initialize(vm);
     }
@@ -323,6 +351,7 @@ fn android_main(app: AndroidApp) {
         .and_then(|events| events.run_app(&mut launcher).map_err(Into::into));
     if let Err(error) = result {
         log::error!("Horizon: {error}");
+        diagnostics::record_error(&error.to_string());
         horizon_client::crash::report_error(&home, "client", &*error);
         let _ = std::fs::write(home.join("android-error.txt"), error.to_string());
     }
@@ -330,6 +359,7 @@ fn android_main(app: AndroidApp) {
     // this process cached after Quit, making the next launch fail. run_app's
     // exiting callback has completed the world save before we get here.
     drop(launcher);
+    diagnostics::finish();
     platform::finish();
     APP.with(|slot| *slot.borrow_mut() = None);
     std::process::exit(0);

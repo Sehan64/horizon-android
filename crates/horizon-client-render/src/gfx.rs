@@ -34,11 +34,16 @@ fn terrain_shader(gl: bool) -> std::borrow::Cow<'static, str> {
     if !gl {
         return std::borrow::Cow::Borrowed(source);
     }
-    let start = source.find("fn sprite(").expect("terrain sprite function");
-    let end = start + source[start..].find("\n}\n").expect("terrain sprite end") + 3;
+    let start = source
+        .find("fn sprite_grad(")
+        .expect("terrain sprite function");
+    let level = source
+        .find("fn sprite_level(")
+        .expect("terrain level function");
+    let end = level + source[level..].find("\n}\n").expect("terrain level end") + 3;
     let mut output = String::with_capacity(source.len() + 200);
     output.push_str(&source[..start]);
-    output.push_str(include_str!("gfx/terrain_gles.wgsl"));
+    output.push_str(include_str!("gfx/terrain_gles.wgsl.inc"));
     output.push_str(&source[end..]);
     std::borrow::Cow::Owned(output)
 }
@@ -105,6 +110,8 @@ mod native_sky;
 mod occlusion;
 mod oit;
 mod oit_features;
+#[cfg(any(target_os = "android", test))]
+mod opaque_output;
 mod pack_atlas;
 pub mod pack_draw;
 mod pack_entities;
@@ -667,6 +674,10 @@ pub struct Renderer {
     world_post: world_post::Post,
     #[cfg(target_os = "android")]
     frame_scale: Option<frame_scale::FrameScale>,
+    #[cfg(target_os = "android")]
+    opaque_output: Option<opaque_output::OpaqueOutput>,
+    #[cfg(target_os = "android")]
+    startup: Option<crate::android_runtime::graphics_startup::Startup>,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
@@ -872,6 +883,7 @@ fn terrain_group(
 pub struct PreparedTextures {
     sprites: Vec<(Vec<u8>, u32)>,
     forcefield: (Vec<u8>, u32),
+    split: u32,
 }
 impl PreparedTextures {
     pub fn new(
@@ -882,6 +894,35 @@ impl PreparedTextures {
         forcefield: (&[u8], u32),
     ) -> Self {
         Self::with_split(pixels, size, layers, settings, forcefield, sprite_split())
+    }
+
+    /// Reuse the worker's exact mip bytes when the selected GPU needs smaller arrays.
+    fn for_split(self, layers: u32, split: u32) -> Self {
+        if self.split == split || layers == 0 {
+            return self;
+        }
+        let levels = self.sprites[0].1;
+        let stride = self.sprites.iter().map(|(b, _)| b.len()).sum::<usize>() / layers as usize;
+        let mut sprites = Vec::new();
+        let mut part = Vec::with_capacity(layers.min(split) as usize * stride);
+        for (bytes, _) in self.sprites {
+            let mut at = 0;
+            while at < bytes.len() {
+                let remaining_layers = layers.saturating_sub(sprites.len() as u32 * split);
+                let target = remaining_layers.min(split) as usize * stride;
+                let n = (target - part.len()).min(bytes.len() - at);
+                part.extend_from_slice(&bytes[at..at + n]);
+                at += n;
+                if part.len() == target {
+                    sprites.push((std::mem::take(&mut part), levels));
+                }
+            }
+        }
+        Self {
+            sprites,
+            forcefield: self.forcefield,
+            split,
+        }
     }
 
     fn with_split(
@@ -903,6 +944,7 @@ impl PreparedTextures {
                 })
                 .collect(),
             forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
+            split,
         }
     }
 }
@@ -1069,16 +1111,17 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
 /// Whether an adapter's texture arrays hold the block textures Horizon puts
 /// in one array.
 fn check_layers(limits: &wgpu::Limits, layers: u32) -> Result<()> {
-    let needed = layers.min(sprite_split());
-    if limits.max_texture_array_layers < needed {
+    let split = sprite_split().min(limits.max_texture_array_layers);
+    if split == 0 || layers > split.saturating_mul(SPRITE_ARRAYS) {
         return Err(format!(
-            "GPU supports {} texture layers; {needed} required",
-            limits.max_texture_array_layers
+            "GPU supports {} layers per array; {layers} sprites exceed {} available arrays",
+            limits.max_texture_array_layers, SPRITE_ARRAYS
         )
         .into());
     }
     Ok(())
 }
+
 /// Whether the swapchain can take a window of `width` x `height`: each side from 1 to the
 /// device's `max_texture_dimension_2d` (`max`), else `Surface::configure` panics. 0 is a
 /// minimized window. Past `max`: Windows lets a program size a window up to 65535 pixels
@@ -1400,6 +1443,11 @@ impl Renderer {
         mut previous: Option<ReplacementContext>,
         api: GraphicsApi,
     ) -> Result<Self> {
+        #[cfg(target_os = "android")]
+        let startup = (!offscreen && api != GraphicsApi::OpenGl)
+            .then(crate::android_runtime::graphics_startup::begin)
+            .flatten();
+
         let split = sprite_split();
         if layers > split * SPRITE_ARRAYS {
             return Err(format!(
@@ -1439,6 +1487,7 @@ impl Renderer {
             }
             None => open_device(&window, offscreen, api, layers).await?,
         };
+        let split = split.min(device.limits().max_texture_array_layers);
         #[cfg(target_os = "android")]
         crate::android_runtime::configure_atlas_limit(device.limits().max_texture_dimension_2d);
         let info = adapter.get_info();
@@ -1454,6 +1503,10 @@ impl Renderer {
                 )
                 .ok_or("surface has no supported configuration")?;
             let caps = surface.get_capabilities(&adapter);
+            #[cfg(target_os = "android")]
+            if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+                config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
+            }
             config.format = surface_format(&caps.formats, config.format);
             config.view_formats = vec![config.format.remove_srgb_suffix()];
             // Screenshots copy the presented frame back from the swapchain.
@@ -1818,9 +1871,11 @@ impl Renderer {
         if gl_backend(&adapter) {
             startup_step(format_args!("creating GLES sprite textures"));
         }
-        let prepared = prepared.unwrap_or_else(|| {
-            PreparedTextures::new(sprite_pixels, sprite_size, layers, sprite_mips, forcefield)
-        });
+        let prepared = prepared
+            .unwrap_or_else(|| {
+                PreparedTextures::new(sprite_pixels, sprite_size, layers, sprite_mips, forcefield)
+            })
+            .for_split(layers, split);
         let mut mip_levels = 1;
         let sprite_compute = animate::SpriteAnimator::compute(&adapter, &device);
         let sprite_storage = if sprite_compute {
@@ -3086,6 +3141,10 @@ impl Renderer {
             world_post,
             #[cfg(target_os = "android")]
             frame_scale: None,
+            #[cfg(target_os = "android")]
+            opaque_output: None,
+            #[cfg(target_os = "android")]
+            startup,
             hdr: None,
             hdr_output,
             hdr_marker: None,
@@ -4047,7 +4106,7 @@ impl Renderer {
                 &self.device,
                 &mut encoder,
                 &self.sprite_textures,
-                sprite_split(),
+                self.terrain_sprites[1] as u32,
                 layers,
                 self.sprite_textures[0].width(),
             );
@@ -6377,6 +6436,21 @@ impl Renderer {
         if let (Some(scale), Some(frame)) = (&self.frame_scale, &surface_frame) {
             scale.present(&mut encoder, &frame.texture);
         }
+        #[cfg(target_os = "android")]
+        if self.config.alpha_mode != wgpu::CompositeAlphaMode::Opaque
+            && let Some(surface) = &surface_frame
+        {
+            // Sanitize only the final swapchain, after HDR/shader packs/scaling.
+            // Internal emissive markers and every RGB channel remain untouched.
+            let format = self.surface_config().format.remove_srgb_suffix();
+            let output = self
+                .opaque_output
+                .get_or_insert_with(|| opaque_output::OpaqueOutput::new(&self.device, format));
+            if output.format != format {
+                *output = opaque_output::OpaqueOutput::new(&self.device, format);
+            }
+            output.present(&mut encoder, &surface.texture);
+        }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
             .as_ref()
@@ -6394,6 +6468,11 @@ impl Renderer {
             self.first_frame = FirstFrame::Drawn;
         }
         let submission = crate::spans::time("submit", || self.queue.submit([commands]));
+        #[cfg(target_os = "android")]
+        if first_frame && let Some(startup) = self.startup.take() {
+            self.queue
+                .on_submitted_work_done(move || startup.complete());
+        }
         if let Some(cull) = &mut self.cull {
             cull.submitted();
         }
@@ -7059,6 +7138,47 @@ mod tests {
             assert_eq!(super::array_layers(count, true), gl);
             assert_eq!(super::array_layers(count, false), count);
         }
+    }
+    #[test]
+    fn mali_1024_layers_regroups_vanilla_without_changing_mips() {
+        let limits = wgpu::Limits {
+            max_texture_array_layers: 1024,
+            ..Default::default()
+        };
+        assert!(super::check_layers(&limits, 1291).is_ok());
+        assert!(super::check_layers(&limits, 8193).is_err());
+        let layers = 1291;
+        let pixels: Vec<u8> = (0..layers)
+            .flat_map(|i| [i as u8, (i >> 8) as u8, 128, 255].repeat(16))
+            .collect();
+        let settings = vec![crate::mipmap::Settings::default(); layers as usize];
+        let expected = super::mip_chain(&pixels, 4, &settings, 0, layers);
+        let prepared = super::PreparedTextures::with_split(
+            &pixels,
+            4,
+            layers,
+            &settings,
+            (&[0, 0, 0, 255].repeat(16), 4),
+            2048,
+        )
+        .for_split(layers, 1024);
+        assert_eq!(prepared.split, 1024);
+        assert_eq!(
+            prepared
+                .sprites
+                .iter()
+                .map(|(b, _)| b.len() / 84)
+                .collect::<Vec<_>>(),
+            [1024, 267]
+        );
+        assert_eq!(
+            prepared
+                .sprites
+                .into_iter()
+                .flat_map(|(b, _)| b)
+                .collect::<Vec<_>>(),
+            expected.0
+        );
     }
     #[test]
     fn entity_shader_validates_with_its_overlay_constants() {
