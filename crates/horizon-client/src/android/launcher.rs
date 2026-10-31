@@ -216,10 +216,9 @@ impl Launcher {
             horizon_client::android_runtime::configure_graphics(
                 self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
             );
-            horizon_client::android_runtime::configure_gpu(matches!(
-                self.catalog.config.renderer,
-                crate::catalog::RendererMode::Vulkan | crate::catalog::RendererMode::VulkanPanVk
-            ));
+            horizon_client::android_runtime::configure_gpu(
+                self.catalog.config.renderer == crate::catalog::RendererMode::Vulkan,
+            );
             // Migrate the earlier launcher preset once; subsequent edits belong to Key Binds.
             let keypad_path = self
                 .catalog
