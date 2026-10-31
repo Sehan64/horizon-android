@@ -174,13 +174,15 @@ pub struct Audio {
     /// The volume sliders' `SoundPreviewHandler`.
     preview: crate::sound_preview::SoundPreview,
     /// `SoundEngine.lastSeenDevices`: the system default output last seen.
-    #[cfg(feature = "audio")]
+    /// Android's AAudio device enumeration is a synchronous JNI call, so do not
+    /// poll it from the frame thread there.
+    #[cfg(all(feature = "audio", not(target_os = "android")))]
     default_seen: Option<String>,
     /// The other half of `lastSeenDevices`: every output device last seen.
-    #[cfg(feature = "audio")]
+    #[cfg(all(feature = "audio", not(target_os = "android")))]
     devices_seen: Vec<String>,
     /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
-    #[cfg(feature = "audio")]
+    #[cfg(all(feature = "audio", not(target_os = "android")))]
     device_ticks: u32,
 }
 fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
@@ -539,7 +541,7 @@ fn open_device(
     Ok((stream, config))
 }
 /// The name of the system's default output device.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_os = "android")))]
 fn default_output_name() -> Option<String> {
     cpal::default_host()
         .default_output_device()
@@ -671,11 +673,11 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
-            #[cfg(feature = "audio")]
+            #[cfg(all(feature = "audio", not(target_os = "android")))]
             default_seen: if live { default_output_name() } else { None },
-            #[cfg(feature = "audio")]
+            #[cfg(all(feature = "audio", not(target_os = "android")))]
             devices_seen: if live { output_devices() } else { Vec::new() },
-            #[cfg(feature = "audio")]
+            #[cfg(all(feature = "audio", not(target_os = "android")))]
             device_ticks: 0,
         }
     }
@@ -810,44 +812,60 @@ impl Audio {
     /// at once a second.
     #[cfg(feature = "audio")]
     fn should_change_device(&mut self) -> bool {
-        let (current, lost) = match self.backend.mixer.lock() {
-            Ok(mut m) => (m.device_name.clone(), std::mem::take(&mut m.device_lost)),
+        let lost = match self.backend.mixer.lock() {
+            Ok(mut m) => std::mem::take(&mut m.device_lost),
             Err(_) => return false,
         };
         if lost {
             log::info!("Horizon: audio device was lost");
-            self.default_seen = default_output_name();
-            self.devices_seen = output_devices();
             return true;
         }
-        self.device_ticks += 1;
-        if self._stream.is_none() || self.device_ticks < 20 {
-            return false;
-        }
-        self.device_ticks = 0;
-        let default = default_output_name();
-        let devices = output_devices();
-        // Only a change in the device lists is looked at, as in vanilla: a
-        // preferred device that is listed but cannot open is not retried.
-        if default == self.default_seen && devices == self.devices_seen {
-            return false;
-        }
-        self.default_seen = default.clone();
-        let wanted = self.device_name.clone();
-        let available = devices.contains(&wanted);
-        self.devices_seen = devices;
-        if wanted.is_empty() {
-            let changed = default.as_deref().is_some_and(|d| d != current);
-            if changed {
-                log::info!("Horizon: system default audio device has changed");
+
+        // AAudio enumerates through AudioManager's synchronous Java API.
+        // Polling it from Audio::tick stalls the Android frame thread; rely on
+        // AAudio's DeviceNotAvailable callback and Android's own route changes.
+        #[cfg(target_os = "android")]
+        return false;
+
+        #[cfg(not(target_os = "android"))]
+        let current = self
+            .backend
+            .mixer
+            .lock()
+            .map(|m| m.device_name.clone())
+            .unwrap_or_default();
+
+        #[cfg(not(target_os = "android"))]
+        {
+            self.device_ticks += 1;
+            if self._stream.is_none() || self.device_ticks < 20 {
+                return false;
             }
-            return changed;
+            self.device_ticks = 0;
+            let default = default_output_name();
+            let devices = output_devices();
+            // Only a change in the device lists is looked at, as in vanilla: a
+            // preferred device that is listed but cannot open is not retried.
+            if default == self.default_seen && devices == self.devices_seen {
+                return false;
+            }
+            self.default_seen = default.clone();
+            let wanted = self.device_name.clone();
+            let available = devices.contains(&wanted);
+            self.devices_seen = devices;
+            if wanted.is_empty() {
+                let changed = default.as_deref().is_some_and(|d| d != current);
+                if changed {
+                    log::info!("Horizon: system default audio device has changed");
+                }
+                return changed;
+            }
+            let changed = current != wanted && available;
+            if changed {
+                log::info!("Horizon: preferred audio device has become available");
+            }
+            changed
         }
-        let changed = current != wanted && available;
-        if changed {
-            log::info!("Horizon: preferred audio device has become available");
-        }
-        changed
     }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
