@@ -27,13 +27,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Java 25 (for engine-data preparation)
-        uses: actions/setup-java@8df10395026330089964d4d5cec818b6250f140a # v4
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '25'
 
       - name: Set up Java 17 (for Android Gradle plugin / SDK tools)
-        uses: actions/setup-java@8df10395026330089964d4d5cec818b6250f140a # v4
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -48,7 +48,7 @@ jobs:
           rustup target add aarch64-linux-android
 
       - name: Set up Gradle 8.14
-        uses: gradle/actions/setup-gradle@d156388eb19633375bd040031f734123f776816b # v4
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14'
 
@@ -71,7 +71,7 @@ jobs:
             --panvk-driver third_party/panvk/libvulkan_panfrost.so
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        uses: actions/upload-artifact@v4
         with:
           name: horizon-android-panvk
           path: .local/android/apk/arm64-v8a/horizon-android.apk
