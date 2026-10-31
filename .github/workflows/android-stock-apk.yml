@@ -1,0 +1,70 @@
+name: Build stock Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HORIZON_TELEMETRY_URL: "off"
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Java 25 (engine-data preparation)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Java 17 (Android build tools)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK platform and NDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "ndk;28.2.13676358" "build-tools;35.0.0" "platforms;android-35"
+
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Prepare pinned engine data
+        run: python3 tools/android_prepare.py --java-home "$JAVA_HOME_25_X64"
+
+      - name: Build and audit stock-driver release APK
+        run: |
+          python3 tools/android_build.py \
+            --abi arm64-v8a \
+            --profile release \
+            --public \
+            --sdk "$ANDROID_HOME" \
+            --java-home "$JAVA_HOME_17_X64" \
+            --gradle "$(which gradle)"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-android-stock-vulkan
+          path: .local/android/apk/arm64-v8a/horizon-android-public.apk
+          if-no-files-found: error
